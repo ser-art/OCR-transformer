@@ -55,7 +55,7 @@ class TextLoader(torch.utils.data.Dataset):
             img = img**(random.random()*0.7 + 0.6)
         else:
             img = self.transform(img)
-            img = np.transpose(img,(2,0,1))
+            #img = np.transpose(img,(2,0,1))
             img = img / img.max()
 
         label = text_to_labels(self.label[index], p2idx)
