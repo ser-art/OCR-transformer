@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-#from tqdm.notebook import tqdm
 from hparams import Hparams, process_texts, text_to_labels, labels_to_text, phoneme_error_rate, process_image, generate_data, count_parameters
 import cv2, os, argparse, time, random, math
 from torchvision import transforms, models
@@ -35,21 +34,27 @@ class TextLoader(torch.utils.data.Dataset):
         self.label = label
         self.image_dir = image_dir
         self.eval = eval
+        self.mix_transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((int(1024*1.05), int(128*1.05))),
+            transforms.RandomCrop((1024, 128)),
+            transforms.RandomRotation(degrees=(-2, 2),fill=255),
+            transforms.ToTensor()
+            ])
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize((int(hp.height*1.05), int(hp.width*1.05))),
-            transforms.RandomCrop((hp.height, hp.width)),
-            transforms.RandomRotation(degrees=(-2, 2),fill=255),
+            transforms.Resize((1024, 128)),
             transforms.ToTensor()
             ])
      
     def __getitem__(self, index):
         img = self.name_image[index]
         if not self.eval:
-            img = self.transform(img)
+            img = self.mix_transform(img)
             img = img / img.max()
             img = img**(random.random()*0.7 + 0.6)
         else:
+            img = self.transform(img)
             img = np.transpose(img,(2,0,1))
             img = img / img.max()
 
@@ -143,7 +148,7 @@ def train(model, optimizer, criterion, iterator):
     epoch_loss = 0
 
     for (src, trg) in tqdm(iterator):
-        src, trg = src.cuda(), trg.cuda()
+        src, trg = src.to(device), trg.to(device)
 
         optimizer.zero_grad()
         output = model(src, trg[:-1,:])
@@ -167,11 +172,12 @@ def evaluate(model, criterion, iterator):
     epoch_loss = 0
     with torch.no_grad():    
         for (src, trg) in tqdm(iterator):
-            src, trg = src.cuda(), trg.cuda()
+            src, trg = src.to(device), trg.to(device)
             output = model(src, trg[:-1,:])
             loss = criterion(output.view(-1, output.shape[-1]), torch.reshape(trg[1:,:], (-1,)))
             epoch_loss += loss.item()
     return epoch_loss / len(iterator)
+
 
 def validate(model, dataloader, show=50):
     model.eval()
@@ -181,7 +187,7 @@ def validate(model, dataloader, show=50):
     with torch.no_grad():
         for (src, trg) in tqdm(dataloader):
             img = np.moveaxis(src[0].numpy(), 0, 2)
-            src = src.cuda()
+            src = src.to(device)
             x = model.backbone.conv1(src)
             x = model.backbone.bn1(x)
             x = model.backbone.relu(x)
@@ -198,7 +204,7 @@ def validate(model, dataloader, show=50):
 
             memory = model.transformer.encoder(model.pos_encoder(x))
 
-            out_indexes = [p2idx['SOS'], ]
+            out_indexes = []
 
             for i in range(100):
                 trg_tensor = torch.LongTensor(out_indexes).unsqueeze(1).to(device)
@@ -206,8 +212,6 @@ def validate(model, dataloader, show=50):
                 output = model.fc_out(model.transformer.decoder(model.pos_decoder(model.decoder(trg_tensor)), memory))
                 out_token = output.argmax(2)[-1].item()
                 out_indexes.append(out_token)
-                if out_token == p2idx['EOS']:
-                    break
 
             out_p = labels_to_text(out_indexes[1:],idx2p)
             real_p = labels_to_text(trg[1:,0].numpy(),idx2p)
@@ -240,7 +244,7 @@ def prediction():
             img = img/img.max() 
             img = np.transpose(img,(2,0,1))
 
-            src =  torch.FloatTensor(img).unsqueeze(0).cuda()
+            src =  torch.FloatTensor(img).unsqueeze(0).to(device)
 
             x = model.backbone.conv1(src)
             x = model.backbone.bn1(x)
@@ -258,7 +262,7 @@ def prediction():
             memory = model.transformer.encoder(model.pos_encoder(x))
             
             p_values = 1
-            out_indexes = [p2idx['SOS'], ]
+            out_indexes = []
             for i in range(100):
                 trg_tensor = torch.LongTensor(out_indexes).unsqueeze(1).to(device)
                 output = model.fc_out(model.transformer.decoder(model.pos_decoder(model.decoder(trg_tensor)), memory))
@@ -266,8 +270,6 @@ def prediction():
                 out_token = output.argmax(2)[-1].item()
                 p_values = p_values * torch.sigmoid(output[-1, 0, out_token]).item()
                 out_indexes.append(out_token)
-                if out_token == p2idx['EOS']:
-                    break
             
             pred = labels_to_text(out_indexes[1:],idx2p)
             print('pred:',p_values,pred)
@@ -346,45 +348,17 @@ if __name__ == '__main__':
     torch.manual_seed(1488)
     torch.cuda.manual_seed(1488)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     # Создать папку с логами
     os.makedirs("log/img/", exist_ok=True)
     
-    # Обучение или предсказание
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-r", "--run", default='generate', help=\
-        "Enter the function you want to run | Введите функцию, которую надо запустить (train, generate)")
-    parser.add_argument("-c", "--checkpoint", default='', help="Чекпоинт")
-    parser.add_argument("-d", "--test_dir", default='', help="Чекпоинт")
-    
-    args = parser.parse_args()
-    if args.run == 'train' or args.run == 't':
-        it_train = True
-    else:
-        it_train = False
-    if args.checkpoint:
-        hp.chk = args.checkpoint
-    if args.test_dir:
-        hp.test_dir = args.test_dir
-    
-    
     # Загрузить частоту слов
-    if it_train:
-        if hp.chk:
-            hp.chk = './log/' + hp.chk
-        
-        # Загружаем название файлов, список строк для обучения и алфавит
-        names,lines,cnt,all_word = process_texts(hp.image_dir,hp.trans_dir)  
-        letters = set(cnt.keys())
-        letters = sorted(list(letters))
-        letters = ['PAD', 'SOS'] + letters + ['EOS']
-    else:
-        hp.chk = './' + hp.chk
-        
-        # Алфавит
-        letters = ['PAD', 'SOS', ' ', '+', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9','[', ']', 
-                'i', 'а', 'б', 'в', 'г', 'д', 'е', 'ж', 'з', 'и', 'й', 'к', 'л','м', 'н', 'о', 'п', 'р', 
-                'с', 'т', 'у', 'ф', 'х', 'ц', 'ч', 'ш', 'щ', 'ъ', 'ы', 'ь', 'э', 'ю', 'я', 'ѣ', 'EOS']
+    # Загружаем название файлов, список строк для обучения и алфавит
+    names,lines,cnt = process_texts(hp.image_dir)  
+    letters = set(cnt.keys())
+    letters = sorted(list(letters))
+
+    print(letters)
    
     print('Символов:',len(letters),':', ' '.join(letters))
 
@@ -393,71 +367,53 @@ if __name__ == '__main__':
     idx2p = {idx: p for idx, p in enumerate(letters)} 
     
     # Создадим обучающую и валидационную выборки.
-    if it_train:
         
-        lines_train = []
-        names_train = []
+    lines_train = []
+    names_train = []
 
-        lines_val = []
-        names_val = []
+    lines_val = []
+    names_val = []
 
-        for num,(line, name) in enumerate(zip(lines,names)):
-            # файлы оканчивающиеся на 9 в валидацию
-            if name[-5] == '9':
-                lines_val.append(line)
-                names_val.append(name)
-            else:
-                lines_train.append(line)
-                names_train.append(name)
+    for num,(line, name) in enumerate(zip(lines[:100],names[:100])):
+        if num % 15 == 0:
+            lines_val.append(line)
+            names_val.append(name)
+        else:
+            lines_train.append(line)
+            names_train.append(name)
 
-        image_train = generate_data(names_train,hp.image_dir) 
-        image_val = generate_data(names_val,hp.image_dir) 
-        
-        # Датасеты
-        train_dataset = TextLoader(image_train,lines_train,hp.image_dir, eval=False)
-        train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True,
-                                  batch_size=hp.batch_size, pin_memory=True,
-                                  drop_last=True, collate_fn=TextCollate())
+    print(1)
 
-        val_dataset = TextLoader(image_val,lines_val,hp.image_dir, eval=True)
-        val_loader = torch.utils.data.DataLoader(val_dataset, shuffle=False,
-                                                 batch_size=1, pin_memory=False,
-                                                 drop_last=False, collate_fn=TextCollate())
+    image_train = generate_data(names_train,hp.image_dir) 
+    image_val = generate_data(names_val,hp.image_dir) 
+    
+    print(2)
+    
+    # Датасеты
+    train_dataset = TextLoader(image_train,lines_train,hp.image_dir, eval=False)
+    train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True,
+                                batch_size=hp.batch_size, pin_memory=True,
+                                drop_last=True, collate_fn=TextCollate())
+
+    print(3)
+
+    val_dataset = TextLoader(image_val,lines_val,hp.image_dir, eval=True)
+    val_loader = torch.utils.data.DataLoader(val_dataset, shuffle=False,
+                                                batch_size=1, pin_memory=False,
+                                                drop_last=False, collate_fn=TextCollate())
+
+    print(4)
 
     valid_loss_all, train_loss_all,eval_accuracy_all,eval_loss_cer_all = [],[],[],[]
     epochs, best_eval_loss_cer = 0, float('inf')
     
     # Создаём модель
-    model = TransformerModel('resnet50', len(letters), hidden=hp.hidden, enc_layers=hp.enc_layers, dec_layers=hp.dec_layers, nhead = hp.nhead, dropout=hp.dropout, pretrained=it_train).to(device)
-    
-    # Загружаем веса
-    if hp.chk:
-        ckpt = torch.load(hp.chk)
-        if 'model' in ckpt:
-            model.load_state_dict(ckpt['model'])
-        else:
-            model.load_state_dict(ckpt)
-        if 'epochs' in ckpt:
-            epochs = int(ckpt['epoch'])
-        if 'valid_loss_all' in ckpt:
-            valid_loss_all   = ckpt['valid_loss_all']
-        if 'best_eval_loss_cer' in ckpt:
-            best_eval_loss_cer   = ckpt['best_eval_loss_cer']        
-        if 'train_loss_all' in ckpt:
-            train_loss_all   = ckpt['train_loss_all']
-        if 'eval_accuracy_all' in ckpt:
-            eval_accuracy_all   = ckpt['eval_accuracy_all']
-        if 'eval_loss_cer_all' in ckpt:
-            eval_loss_cer_all   = ckpt['eval_loss_cer_all']
-    
+    model = TransformerModel('resnet50', len(letters), hidden=hp.hidden, enc_layers=hp.enc_layers, dec_layers=hp.dec_layers, nhead = hp.nhead, dropout=hp.dropout, pretrained=False).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=hp.lr)
-    criterion = nn.CrossEntropyLoss(ignore_index=p2idx['PAD'])
+    criterion = nn.CrossEntropyLoss()
     #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 50, eta_min=0, last_epoch=-1)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
     print(f'The model has {count_parameters(model):,} trainable parameters')
     #print(model)
     
-    if it_train:
-        train_all(best_eval_loss_cer)
-    else:
-        prediction()
+    train_all(best_eval_loss_cer)

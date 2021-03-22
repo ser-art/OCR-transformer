@@ -10,21 +10,21 @@ class Hparams():
         self.chk = ''
         
         #В этой папке лежат txt файлы перевода
-        self.trans_dir = 'train/words'
+        #self.trans_dir = 'train/words'
         
         #В этой папке лежат  jpg файлы изображений
-        self.image_dir = 'train/images'
+        self.image_dir = './2'
         
-        self.test_dir = '/data/'
+        self.test_dir = './test'
         
         #Символы, которые надо удалить
-        self.del_sym = ['b', 'd', 'a', 'c', '×', '⊕', ')', '|', 'n', 'm', 'g', 'ǂ', '/', 'k', 'o', '–', '⊗', 'l', '…', 'u','h','і', 'f','t','p', 'r', 'e','s']
+        self.del_sym = ["'", ";", "[", "]", "{", "}", "í", "ñ", "õ"]
         
         # Скорость обучения
         self.lr = 1e-4
         
         # Размер батча
-        self.batch_size = 16 
+        self.batch_size = 64
         
         # Размер скрытого слоя
         self.hidden = 512
@@ -42,62 +42,45 @@ class Hparams():
         self.dropout = 0.1
  
         # размеры изображения 
-        self.width = 1024
-        self.height = 128
+        self.width = 250
+        self.height = 80
         
 # Загружаем гиперпараметры
 hp = Hparams()
 
-# функция игнорируются примеры, содержащие del_sym."""
-def process_texts(image_dir,trans_dir):
+def process_texts(image_dir):
     lens,lines,names = [],[],[]
     letters = ''
-    all_word = {}
-    all_files = os.listdir(trans_dir)
     for filename in os.listdir(image_dir):
-        if filename[:-3]+'txt' in all_files:
-            name, _ = os.path.splitext(filename)
-            txt_filepath = join(trans_dir, name + '.txt')
-            with open(txt_filepath, 'r', encoding="utf-8") as file:
-                data = file.read()
-                if len(data)==0:
-                    continue
-                if len(set(data).intersection(hp.del_sym))>0:
-                    continue
-                lines.append(data)
-                names.append(filename)
-                lens.append(len(data))
-                letters = letters + ' ' + data
-    words = letters.split()
-    for word in words:
-        if not word in all_word:
-            all_word[word] = 0
-        else:
-            all_word[word] += 1
+        label, _ = os.path.splitext(filename)
+        label = label.lower().strip().replace('.', '')
+
+        if len(label) < 5:
+            continue
+
+        if len(label.split()) != 2:
+            continue
+
+        if len(set(label).intersection(hp.del_sym)) > 0:
+            continue
+
+        lines.append(label)
+        names.append(filename)
+        lens.append(len(label))
+        letters = letters + ' ' + label
     
-    del_cnt = []
     cnt = Counter(letters)
-    """
-    #print(cnt)
-    for i in cnt:
-      if cnt[i]<11:
-        del_cnt.append(i)
-    #print(del_cnt)  
-    """
     print('Максимальная длина строки:', max(Counter(lens).keys()))
-    return names,lines,cnt,all_word
+    return names,lines,cnt
 
 # Перевести текст в массив интдексов
 def text_to_labels(s, p2idx):
-    return [p2idx['SOS']] + [p2idx[i] for i in s if i in p2idx.keys()] + [p2idx['EOS']]
+    return [p2idx[i] for i in s if i in p2idx.keys()]
 
 # Перевести индексы в текст
 def labels_to_text(s, idx2p):
     S = "".join([idx2p[i] for i in s])
-    if S.find('EOS') == -1:
-        return S
-    else:
-        return S[:S.find('EOS')]
+    return S
 
 # Подсчитать CER
 def phoneme_error_rate(p_seq1, p_seq2):
@@ -130,10 +113,10 @@ def process_image(img):
     
     return img
 
-def generate_data(names,image_dir='train1/images'):
+def generate_data(names,image_dir):
     data_images = []
     for name in tqdm(names):
-        img = cv2.imread(image_dir+'/'+name,cv2.IMREAD_GRAYSCALE)#
+        img = cv2.imread(image_dir+'/'+name,cv2.IMREAD_GRAYSCALE)
         img = process_image(img)
         data_images.append(img.astype('uint8'))
     return data_images
